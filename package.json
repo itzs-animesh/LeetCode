@@ -1,0 +1,9 @@
+{
+  "name": "weekly-contest-rankfinder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Search LeetCode weekly contest rankings by contest number and username.",
+  "scripts": {
+    "start": "python server.py"
+  }
+}

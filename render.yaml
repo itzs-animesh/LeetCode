@@ -1,0 +1,9 @@
+# Render Blueprint: deploy RankFinder as a Python web service.
+services:
+  - type: web
+    name: rankfinder
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /api/health
