@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f6f7f9" />
+  <title>Contest Rank — LeetCode Weekly Contest Search</title>
+  <link rel="stylesheet" href="/styles.css?v=2" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Contest Rank home">
+        <span class="brand-mark">CR</span>
+        <span>Contest Rank</span>
+      </a>
+      <a class="top-link" href="https://leetcode.com/contest/" target="_blank" rel="noreferrer">LeetCode contests ↗</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow">WEEKLY CONTESTS</div>
+        <h1>Search a contest<br /><span>by username.</span></h1>
+        <p class="hero-copy">Enter a weekly contest number and a LeetCode username to find their rank, score, and finish time.</p>
+      </section>
+
+      <section class="search-card" aria-label="Search weekly contest rankings">
+        <div class="card-topline">
+          <div>
+            <span class="section-kicker">SEARCH</span>
+            <h2>Find a participant</h2>
+          </div>
+          <div class="global-pill">GLOBAL RANKING</div>
+        </div>
+        <form id="search-form" class="search-form">
+          <label class="field field-type">
+            <span>Contest type</span>
+            <div class="contest-toggle" role="group" aria-label="Contest type">
+              <button class="contest-option is-active" type="button" data-contest-type="weekly" aria-pressed="true">Weekly</button>
+              <button class="contest-option" type="button" data-contest-type="biweekly" aria-pressed="false">Biweekly</button>
+            </div>
+            <select id="contest-type" name="type" class="visually-hidden" tabindex="-1" aria-hidden="true">
+              <option value="weekly">Weekly</option>
+              <option value="biweekly">Biweekly</option>
+            </select>
+            <small>Choose the contest series.</small>
+          </label>
+          <label class="field field-contest">
+            <span>Contest number</span>
+            <div class="input-wrap">
+              <span class="input-prefix">#</span>
+              <input id="contest" name="contest" type="number" min="1" max="9999" inputmode="numeric" placeholder="522" required aria-describedby="contest-help" />
+            </div>
+            <small id="contest-help">Example: 522</small>
+          </label>
+          <label class="field field-username">
+            <span>Username</span>
+            <div class="input-wrap">
+              <span class="at-prefix">@</span>
+              <input id="username" name="username" type="text" maxlength="40" autocomplete="off" spellcheck="false" placeholder="username" required />
+            </div>
+            <small>Use the username from the profile URL.</small>
+          </label>
+          <button class="search-button" type="submit">
+            <span id="button-label">Search</span>
+            <span class="button-arrow">→</span>
+          </button>
+        </form>
+      </section>
+
+      <section id="status-panel" class="status-panel" hidden aria-live="polite">
+        <div class="status-icon"><span class="spinner"></span></div>
+        <div class="status-content">
+          <strong id="status-message">Preparing lookup</strong>
+          <span id="status-detail">Connecting to LeetCode...</span>
+          <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+          <div id="progress-caption" class="progress-caption"></div>
+        </div>
+        <button id="cancel-button" class="cancel-button" type="button">Cancel</button>
+      </section>
+
+      <section id="result-panel" class="result-panel" hidden aria-live="polite">
+        <div class="result-heading">
+          <div>
+            <div class="section-kicker">RESULT</div>
+            <h2 id="result-title">Participant found</h2>
+          </div>
+          <span id="source-badge" class="source-badge">LEETCODE</span>
+        </div>
+        <div class="identity-row">
+          <div id="avatar-fallback" class="avatar-fallback">—</div>
+          <div class="identity-copy">
+            <div id="result-display-name" class="display-name">Participant</div>
+            <div id="result-username" class="result-username">@username</div>
+          </div>
+          <a id="profile-link" class="profile-link" href="#" target="_blank" rel="noreferrer">View profile ↗</a>
+        </div>
+        <div class="metrics-grid">
+          <div class="metric metric-rank">
+            <span class="metric-label">RANK</span>
+            <strong id="result-rank">—</strong>
+            <span class="metric-note">out of <span id="result-total">—</span></span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">SCORE</span>
+            <strong id="result-score">—</strong>
+            <span class="metric-note">points</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">FINISH TIME</span>
+            <strong id="result-time">—</strong>
+            <span class="metric-note">after start</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">CONTEST</span>
+            <strong id="result-contest">—</strong>
+            <span class="metric-note">weekly</span>
+          </div>
+        </div>
+        <div class="result-footer">
+          <span id="result-context">Leaderboard row located on page —.</span>
+          <a id="ranking-link" href="#" target="_blank" rel="noreferrer" class="ranking-link">Open ranking page ↗</a>
+        </div>
+      </section>
+
+      <section id="not-found-panel" class="empty-panel" hidden aria-live="polite">
+        <div class="empty-icon">?</div>
+        <div>
+          <div class="section-kicker">NO MATCH</div>
+          <h2 id="not-found-title">No entry found</h2>
+          <p>Check the contest number and spelling, then try again.</p>
+        </div>
+      </section>
+
+      <section id="error-panel" class="empty-panel error-panel" hidden aria-live="polite">
+        <div class="empty-icon">!</div>
+        <div>
+          <div class="section-kicker">TEMPORARY ISSUE</div>
+          <h2>Couldn’t reach the leaderboard</h2>
+          <p id="error-message">Please try again in a moment.</p>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <div class="info-card">
+          <div class="info-icon">↗</div>
+          <div>
+            <h3>Fast for past contests</h3>
+            <p>Contest history is checked first. Newer contests are searched directly.</p>
+          </div>
+        </div>
+        <div class="info-card">
+          <div class="info-icon">25</div>
+          <div>
+            <h3>Direct ranking link</h3>
+            <p>Open the exact leaderboard page where the participant appears.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="recent-section" class="recent-section" hidden>
+        <div class="recent-heading"><span class="section-kicker">RECENT SEARCHES</span><button id="clear-history" type="button">Clear</button></div>
+        <div id="recent-list" class="recent-list"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Contest Rank</span><span class="footer-separator">·</span><span>Public LeetCode ranking data</span>
+      <a href="https://leetcode.com/contest/" target="_blank" rel="noreferrer">Open LeetCode contests ↗</a>
+    </footer>
+  </div>
+  <script src="/app.js?v=4"></script>
+</body>
+</html>
