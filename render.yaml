@@ -4,6 +4,10 @@ services:
     name: rankfinder
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      test -s public/index.html &&
+      test -s public/app.js &&
+      test -s public/styles.css
     startCommand: python server.py
     healthCheckPath: /api/health

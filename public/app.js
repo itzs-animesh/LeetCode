@@ -179,8 +179,20 @@ function beginSearch(type, contest, username) {
   activeSource.addEventListener('progress', event => {
     const data = JSON.parse(event.data);
     const percent = Math.max(0, Math.min(100, Number(data.percent || 0)));
+    const checked = formatNumber(data.scanned);
+    const total = formatNumber(data.totalPages);
     progressBar.style.width = `${percent}%`;
-    progressCaption.textContent = `Scanned page ${formatNumber(data.scanned)} of ${formatNumber(data.totalPages)} · ${percent}%`;
+    progressCaption.textContent = `Checked ${checked} of ${total} pages · ${percent}%`;
+    statusDetail.textContent = `${checked} of ${total} leaderboard pages checked.`;
+  });
+
+  activeSource.addEventListener('heartbeat', event => {
+    const data = JSON.parse(event.data);
+    const checked = formatNumber(data.scanned);
+    const total = Number(data.totalPages || 0);
+    statusDetail.textContent = total
+      ? `Still connected; waiting for leaderboard responses (${checked} of ${formatNumber(total)} pages checked).`
+      : 'Still connected; waiting for LeetCode contest data.';
   });
 
   activeSource.addEventListener('result', event => {

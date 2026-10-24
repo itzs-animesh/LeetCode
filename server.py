@@ -15,11 +15,16 @@ import requests
 
 HOST = '0.0.0.0'
 PORT = int(os.environ.get('PORT', '3000'))
-PUBLIC_DIR = Path(__file__).parent / 'public'
+BASE_DIR = Path(__file__).resolve().parent
+PUBLIC_DIR = BASE_DIR / 'public'
+REQUIRED_UI_FILES = ('index.html', 'app.js', 'styles.css')
 PAGE_SIZE = 25
-BATCH_SIZE = 64
+# Parallel page fetches reduce full-scan time without the burst size of the old 64-worker pool.
+BATCH_SIZE = 32
+SSE_HEARTBEAT_INTERVAL = 15
 MAX_PAGES = 5000
-CACHE_LIMIT = 600
+# Keep a complete ~1,250-page contest in memory so later searches reuse fetched pages.
+CACHE_LIMIT = 2500
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36',
@@ -63,20 +68,27 @@ def send_json(handler: BaseHTTPRequestHandler, status: int, payload: dict):
     handler.wfile.write(body)
 
 
-def get_json(url: str, referer: str | None = None, retries: int = 4):
+def get_json(url: str, referer: str | None = None, retries: int = 3):
     headers = dict(HEADERS)
     if referer:
         headers['Referer'] = referer
+    retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
     last_error = None
     for attempt in range(retries):
         try:
-            response = SESSION.get(url, headers=headers, timeout=25)
+            response = SESSION.get(url, headers=headers, timeout=(5, 12))
             if response.status_code == 200:
                 return response.json()
             last_error = RuntimeError(f'upstream returned {response.status_code}')
+            # A 403 can be a transient Cloudflare response, but retry it only once
+            # before allowing the caller to try the .cn mirror.
+            may_retry_403 = response.status_code == 403 and attempt < 2
+            if response.status_code not in retryable_statuses and not may_retry_403:
+                break
         except Exception as error:  # pragma: no cover - network dependent
             last_error = error
-        time.sleep(0.22 * (attempt + 1))
+        if attempt + 1 < retries:
+            time.sleep(0.25 * (attempt + 1))
     raise last_error or RuntimeError('upstream request failed')
 
 
@@ -150,7 +162,7 @@ def fetch_history(username: str) -> list:
         'https://leetcode.com/graphql',
         headers={**HEADERS, 'Content-Type': 'application/json'},
         json={'operationName': 'ContestHistory', 'variables': {'username': username}, 'query': query},
-        timeout=25,
+        timeout=(5, 12),
     )
     response.raise_for_status()
     history = response.json().get('data', {}).get('userContestRankingHistory') or []
@@ -202,11 +214,18 @@ def result_for(row: dict, contest_type: str, contest: int, page: int, info: dict
 
 
 def write_event(handler: BaseHTTPRequestHandler, event: str, payload: dict):
+    message = f'event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n'.encode('utf-8')
+    lock = getattr(handler, '_rankfinder_stream_lock', None)
     try:
-        handler.wfile.write(f'event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n'.encode('utf-8'))
-        handler.wfile.flush()
-    except (BrokenPipeError, ConnectionResetError):
-        raise ConnectionError('client disconnected')
+        if lock:
+            with lock:
+                handler.wfile.write(message)
+                handler.wfile.flush()
+        else:
+            handler.wfile.write(message)
+            handler.wfile.flush()
+    except OSError as error:
+        raise ConnectionError('client disconnected') from error
 
 
 def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: int, username: str):
@@ -217,17 +236,39 @@ def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: i
     handler.send_header('X-Accel-Buffering', 'no')
     handler.close_connection = True
     handler.end_headers()
-    handler.wfile.write(b': connected\n\n')
-    handler.wfile.flush()
+    stream_lock = threading.Lock()
+    handler._rankfinder_stream_lock = stream_lock
+    with stream_lock:
+        handler.wfile.write(b': connected\n\n')
+        handler.wfile.flush()
+
+    progress_state = {'scanned': 0, 'totalPages': 0}
+    state_lock = threading.Lock()
+    heartbeat_stop = threading.Event()
+
+    def heartbeat():
+        while not heartbeat_stop.wait(SSE_HEARTBEAT_INTERVAL):
+            with state_lock:
+                snapshot = dict(progress_state)
+            try:
+                write_event(handler, 'heartbeat', snapshot)
+            except ConnectionError:
+                return
+
+    heartbeat_thread = threading.Thread(target=heartbeat, name='rankfinder-sse-heartbeat', daemon=True)
+    heartbeat_thread.start()
 
     def status(message: str, detail: str = ''):
         write_event(handler, 'status', {'message': message, 'detail': detail})
 
     def progress(scanned: int, total_pages: int):
+        percent = min(100, round(scanned / total_pages * 100, 1)) if total_pages else 0
+        with state_lock:
+            progress_state.update({'scanned': scanned, 'totalPages': total_pages})
         write_event(handler, 'progress', {
             'scanned': scanned,
             'totalPages': total_pages,
-            'percent': min(100, round(scanned / total_pages * 100)) if total_pages else 0,
+            'percent': percent,
         })
 
     try:
@@ -251,7 +292,8 @@ def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: i
                 row = None
                 data = None
             if row:
-                progress(page, max(page, math.ceil((data.get('user_num') or history_entry['ranking']) / PAGE_SIZE)))
+                total_pages = max(page, math.ceil((data.get('user_num') or history_entry['ranking']) / PAGE_SIZE))
+                progress(1, total_pages)
                 write_event(handler, 'result', result_for(
                     row, contest_type, contest, page, info, 'contest history + leaderboard' if data.get('__rankfinder_source') == 'live' else 'leaderboard mirror',
                     problemsSolved=history_entry.get('problemsSolved'),
@@ -286,6 +328,10 @@ def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: i
         first_page = fetch_page(contest_type, contest, 1)
         total_users = int(first_page.get('user_num') or first_page.get('total_users') or 0)
         total_pages = min(MAX_PAGES, max(1, math.ceil(total_users / PAGE_SIZE)))
+        status(
+            f'Scanning {contest_title(contest_type, contest)} leaderboard',
+            f'Checking {total_users:,} participants across {total_pages:,} pages; progress updates as pages return.',
+        )
         progress(0, total_pages)
 
         if history_page:
@@ -302,34 +348,42 @@ def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: i
             scan_order = list(range(1, total_pages + 1))
 
         completed = 0
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         for start in range(0, len(scan_order), BATCH_SIZE):
             pages = scan_order[start:start + BATCH_SIZE]
             found = None
             found_page = None
             found_source = 'live'
-            # requests' session has a warmed CSRF cookie from the GraphQL call. A few
-            # LeetCode edges can briefly answer 403, so each page retries in get_json.
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
-                futures = {executor.submit(fetch_page, contest_type, contest, page): page for page in pages}
+            # Keep concurrency moderate and report each completed request so the UI
+            # doesn't sit at 0% while waiting for an entire batch to finish.
+            executor = ThreadPoolExecutor(max_workers=min(BATCH_SIZE, len(pages)))
+            futures = {executor.submit(fetch_page, contest_type, contest, page): page for page in pages}
+            try:
                 for future in as_completed(futures):
                     page = futures[future]
+                    completed += 1
                     try:
                         data = future.result()
                     except Exception:
+                        progress(completed, total_pages)
                         continue
                     row = find_row(data, username)
                     if row and found is None:
                         found, found_page = row, page
                         found_source = 'live' if data.get('__rankfinder_source') == 'live' else 'mirror'
-            completed += len(pages)
+                    progress(completed, total_pages)
+                    if found:
+                        for pending in futures:
+                            if pending is not future:
+                                pending.cancel()
+                        break
+            finally:
+                executor.shutdown(wait=found is None, cancel_futures=found is not None)
             if found:
-                progress(found_page, total_pages)
                 source_label = 'global leaderboard' if found_source == 'live' else 'leaderboard mirror'
                 write_event(handler, 'result', result_for(found, contest_type, contest, found_page, info, source_label, totalParticipants=total_users))
                 write_event(handler, 'done', {})
                 return
-            progress(completed, total_pages)
 
         write_event(handler, 'not_found', {'contest': contest, 'username': username, 'message': f'No exact match for “{username}” was found in {contest_title(contest_type, contest)}.'})
         write_event(handler, 'done', {})
@@ -341,6 +395,9 @@ def search_stream(handler: BaseHTTPRequestHandler, contest_type: str, contest: i
             write_event(handler, 'done', {})
         except Exception:
             pass
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -353,6 +410,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == '/api/health':
+            missing = [name for name in REQUIRED_UI_FILES if not (PUBLIC_DIR / name).is_file()]
+            if missing:
+                return send_json(self, 503, {'ok': False, 'error': 'Required UI files are missing from public/.', 'missing': missing})
             return send_json(self, 200, {'ok': True})
         if parsed.path == '/api/search':
             params = parse_qs(parsed.query)
